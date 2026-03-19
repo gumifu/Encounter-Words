@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f3f4f6;
+  --foreground: #121826;
+  --muted: #6b7280;
+  --card-border: #e5e7eb;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family:
+    "Inter",
+    "Yu Gothic",
+    "YuGothic",
+    "Hiragino Kaku Gothic ProN",
+    "Meiryo",
+    system-ui,
+    -apple-system,
+    sans-serif;
+}

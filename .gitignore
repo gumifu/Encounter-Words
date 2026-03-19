@@ -1,0 +1,6 @@
+node_modules/
+.next/
+.env.local
+data/shares/
+public/generated/
+*.log
