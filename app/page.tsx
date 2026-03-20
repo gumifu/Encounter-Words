@@ -3,6 +3,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import { gsap } from "gsap";
+import { AnimatePresence, motion } from "framer-motion";
+import { ArrowLeftRight, ArrowUpRight, Heart, ImageIcon, LayoutGrid, Loader2, RefreshCw, SlidersHorizontal, Trash2 } from "lucide-react";
+import {
+  IMAGE_STYLE_OPTIONS,
+  type ImageStyleOption,
+} from "../lib/image-generation-options";
 
 type Pair = {
   left: string;
@@ -10,7 +16,6 @@ type Pair = {
 };
 type LengthFilter = 1 | 2 | 3 | 4;
 type PosFilter = "名詞" | "動詞" | "形容詞" | "副詞" | "その他";
-type VariationMode = "standard" | "strong";
 type GeneratedImage = {
   id: string;
   phrase: string;
@@ -20,6 +25,7 @@ type GeneratedImage = {
 
 const FAVORITES_STORAGE_KEY = "word-fusion.favorites";
 const GENERATED_IMAGES_STORAGE_KEY = "word-fusion.generated-images";
+const CUSTOM_IMAGE_STYLES_STORAGE_KEY = "word-fusion.custom-image-styles";
 const JLPT_CSV_URL = "https://raw.githubusercontent.com/elzup/jlpt-word-list/master/out/all.min.csv";
 const MIN_WORD_LENGTH = 1;
 const MAX_WORD_LENGTH = 4;
@@ -186,11 +192,39 @@ function saveGeneratedImages(images: GeneratedImage[]): void {
   window.localStorage.setItem(GENERATED_IMAGES_STORAGE_KEY, JSON.stringify(images));
 }
 
+function loadCustomImageStyles(): ImageStyleOption[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(CUSTOM_IMAGE_STYLES_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (item): item is ImageStyleOption =>
+        item &&
+        typeof item === "object" &&
+        typeof item.id === "string" &&
+        typeof item.label === "string" &&
+        typeof item.prompt === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
+function saveCustomImageStyles(styles: ImageStyleOption[]): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(CUSTOM_IMAGE_STYLES_STORAGE_KEY, JSON.stringify(styles));
+}
+
 export default function Page() {
   const [pair, setPair] = useState<Pair>(INITIAL_PAIR);
+  const [key1, setKey1] = useState(0);
+  const [key2, setKey2] = useState(0);
   const [words, setWords] = useState<string[]>(FALLBACK_WORDS);
   const [favorites, setFavorites] = useState<string[]>([]);
   const [isUsingFallback, setIsUsingFallback] = useState<boolean>(true);
+  const [loading, setLoading] = useState(true);
   const [lengthFilters, setLengthFilters] = useState<Record<LengthFilter, boolean>>({
     1: true,
     2: true,
@@ -212,10 +246,27 @@ export default function Page() {
   const [isCreatingShare, setIsCreatingShare] = useState(false);
   const [shareUrl, setShareUrl] = useState("");
   const [imageError, setImageError] = useState("");
-  const [variationMode, setVariationMode] = useState<VariationMode>("strong");
-  const [includeHumanFunny, setIncludeHumanFunny] = useState(true);
+  const [customImageStyles, setCustomImageStyles] = useState<ImageStyleOption[]>([]);
+  const [imageStyleId, setImageStyleId] = useState<string>("cinematic");
+  const [includePerson, setIncludePerson] = useState(true);
+  const [isStyleEditorOpen, setIsStyleEditorOpen] = useState(false);
+  const [newStyleLabel, setNewStyleLabel] = useState("");
+  const [newStylePrompt, setNewStylePrompt] = useState("");
   const previewCardRef = useRef<HTMLDivElement | null>(null);
   const galleryPanelRef = useRef<HTMLDivElement | null>(null);
+  const springTransition = useMemo(
+    () => ({ type: "spring" as const, stiffness: 320, damping: 30, mass: 0.9 }),
+    [],
+  );
+
+  const setPairWithKeys = (nextPairOrUpdater: Pair | ((prev: Pair) => Pair)) => {
+    setPair((prev) => {
+      const next = typeof nextPairOrUpdater === "function" ? nextPairOrUpdater(prev) : nextPairOrUpdater;
+      if (next.left !== prev.left) setKey1((k) => k + 1);
+      if (next.right !== prev.right) setKey2((k) => k + 1);
+      return next;
+    });
+  };
 
   useEffect(() => {
     const stored = loadFavorites();
@@ -229,7 +280,7 @@ export default function Page() {
     const left = params.get("left")?.trim();
     const right = params.get("right")?.trim();
     if (!left || !right || left === right) return;
-    Promise.resolve().then(() => setPair({ left, right }));
+    Promise.resolve().then(() => setPairWithKeys({ left, right }));
   }, []);
 
   useEffect(() => {
@@ -239,6 +290,12 @@ export default function Page() {
       setGeneratedImages(stored);
       setGeneratedImageUrl(stored[0].imageUrl);
     });
+  }, []);
+
+  useEffect(() => {
+    const stored = loadCustomImageStyles();
+    if (!stored.length) return;
+    Promise.resolve().then(() => setCustomImageStyles(stored));
   }, []);
 
   useEffect(() => {
@@ -255,7 +312,8 @@ export default function Page() {
           Promise.resolve().then(() => {
             setWords(FALLBACK_WORDS);
             setIsUsingFallback(true);
-            setPair(generatePair(FALLBACK_WORDS));
+            setPairWithKeys(generatePair(FALLBACK_WORDS));
+            setLoading(false);
           });
           return;
         }
@@ -263,19 +321,25 @@ export default function Page() {
         Promise.resolve().then(() => {
           setWords(parsedWords);
           setIsUsingFallback(false);
-          setPair(generatePair(parsedWords));
+          setPairWithKeys(generatePair(parsedWords));
+          setLoading(false);
         });
       })
       .catch(() => {
         Promise.resolve().then(() => {
           setWords(FALLBACK_WORDS);
           setIsUsingFallback(true);
-          setPair(generatePair(FALLBACK_WORDS));
+          setPairWithKeys(generatePair(FALLBACK_WORDS));
+          setLoading(false);
         });
       });
   }, []);
 
   const pairText = useMemo(() => pairToText(pair), [pair]);
+  const allImageStyles = useMemo(
+    () => [...IMAGE_STYLE_OPTIONS, ...customImageStyles],
+    [customImageStyles],
+  );
   const isFavorited = useMemo(() => favorites.includes(pairText), [favorites, pairText]);
   const filteredByLength = useMemo(() => {
     const next = words.filter((word) => {
@@ -295,10 +359,14 @@ export default function Page() {
     }
     return `約 ${filteredCount} 語のJLPT辞書から生成`;
   }, [filteredWords.length, isUsingFallback]);
+  const selectedImageStyle = useMemo(
+    () => allImageStyles.find((style) => style.id === imageStyleId) ?? allImageStyles[0],
+    [allImageStyles, imageStyleId],
+  );
 
   useEffect(() => {
     if (!filteredWords.includes(pair.left) || !filteredWords.includes(pair.right)) {
-      Promise.resolve().then(() => setPair(generatePair(filteredWords)));
+      Promise.resolve().then(() => setPairWithKeys(generatePair(filteredWords)));
     }
   }, [filteredWords, pair.left, pair.right]);
 
@@ -326,15 +394,15 @@ export default function Page() {
   }, [isGalleryModalOpen]);
 
   const handleShuffle = () => {
-    setPair(generatePair(filteredWords));
+    setPairWithKeys(generatePair(filteredWords));
   };
 
   const handleSwap = () => {
-    setPair((prev) => ({ left: prev.right, right: prev.left }));
+    setPairWithKeys((prev) => ({ left: prev.right, right: prev.left }));
   };
 
   const handleShuffleLeft = () => {
-    setPair((prev) => {
+    setPairWithKeys((prev) => {
       const nextLeft = pickDifferentWord(filteredWords, prev.left);
       return {
         left: nextLeft === prev.right ? pickDifferentWord(filteredWords, prev.right) : nextLeft,
@@ -344,7 +412,7 @@ export default function Page() {
   };
 
   const handleShuffleRight = () => {
-    setPair((prev) => {
+    setPairWithKeys((prev) => {
       const nextRight = pickDifferentWord(filteredWords, prev.right);
       return {
         left: prev.left,
@@ -376,6 +444,14 @@ export default function Page() {
     });
   };
 
+  const handleRemoveFavorite = (item: string) => {
+    setFavorites((prev) => {
+      const next = prev.filter((value) => value !== item);
+      saveFavorites(next);
+      return next;
+    });
+  };
+
   const handleGenerateImage = async () => {
     if (isGeneratingImage) return;
     setImageError("");
@@ -390,8 +466,10 @@ export default function Page() {
           left: pair.left,
           right: pair.right,
           phrase: pairText,
-          variationMode,
-          includeHumanFunny,
+          imageStyleId: selectedImageStyle.id,
+          imageStyleLabel: selectedImageStyle.label,
+          imageStylePrompt: selectedImageStyle.prompt,
+          includePerson,
         }),
       });
 
@@ -490,141 +568,271 @@ export default function Page() {
     }
   };
 
-  return (
-    <main className="flex min-h-screen items-center justify-center bg-[#f5f5f7] p-6">
-      <section className="w-full max-w-3xl text-center">
-        <h1 className="text-4xl font-semibold tracking-tight text-[#1d1d1f]">Word Blender</h1>
-        <p className="mt-3 text-sm text-[#6e6e73]">ランダムな単語の組み合わせを発見しよう</p>
-        <p className="mt-1 text-xs text-[#86868b]">{pairsGeneratedLabel}</p>
+  const handleAddCustomStyle = () => {
+    const label = newStyleLabel.trim();
+    const prompt = newStylePrompt.trim();
+    if (!label || !prompt) return;
 
-        <div className="mx-auto mt-14 flex items-center justify-center gap-3">
+    const style: ImageStyleOption = {
+      id: `custom-${crypto.randomUUID()}`,
+      label,
+      prompt,
+    };
+    setCustomImageStyles((prev) => {
+      const next = [style, ...prev].slice(0, 30);
+      saveCustomImageStyles(next);
+      return next;
+    });
+    setImageStyleId(style.id);
+    setNewStyleLabel("");
+    setNewStylePrompt("");
+    setIsStyleEditorOpen(false);
+  };
+
+  const handleDeleteCustomStyle = (styleId: string) => {
+    setCustomImageStyles((prev) => {
+      const next = prev.filter((style) => style.id !== styleId);
+      saveCustomImageStyles(next);
+      return next;
+    });
+    if (imageStyleId === styleId) {
+      setImageStyleId(IMAGE_STYLE_OPTIONS[0].id);
+    }
+  };
+
+  return (
+    <main className="min-h-screen bg-[#f5f5f7] px-4 py-16 sm:py-24">
+      <section className="mx-auto flex w-full max-w-5xl flex-col items-center text-center">
+        <h1 className="text-2xl font-bold tracking-tight text-[#1d1d1f] sm:text-3xl">Word Fusion</h1>
+        <p className="mb-1 mt-2 text-sm text-[#6e6e73]">ランダムな単語の組み合わせを発見しよう</p>
+        <p className="mb-14 text-xs text-[#6e6e73]/60">
+          {loading ? "辞書を読み込み中..." : pairsGeneratedLabel}
+        </p>
+
+        {loading ? (
+          <div className="mb-10 flex items-center gap-2 py-20 text-[#6e6e73]">
+            <Loader2 className="h-5 w-5 animate-spin" />
+            <span className="text-sm">読み込み中...</span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-5">
+            <AnimatePresence mode="wait" initial={false}>
+              <motion.button
+                key={`a-${key1}`}
+                type="button"
+                onClick={handleShuffleLeft}
+                className="relative flex h-[120px] w-[180px] select-none items-center justify-center rounded-2xl border border-[#d2d2d7] bg-white text-3xl font-semibold tracking-tight text-[#1d1d1f] transition-colors duration-200 hover:bg-[#f2f2f7] active:scale-[0.97] sm:h-[140px] sm:w-[220px] sm:text-[2.75rem]"
+                aria-label="左の単語だけシャッフル"
+                initial={{ y: 20, opacity: 0 }}
+                animate={{ y: 0, opacity: 1 }}
+                exit={{ y: -12, opacity: 0 }}
+                transition={springTransition}
+              >
+                {pair.left}
+              </motion.button>
+            </AnimatePresence>
+            <span className="shrink-0 select-none text-lg font-light text-[#6e6e73]/40">×</span>
+            <AnimatePresence mode="wait" initial={false}>
+              <motion.button
+                key={`b-${key2}`}
+                type="button"
+                onClick={handleShuffleRight}
+                className="relative flex h-[120px] w-[180px] select-none items-center justify-center rounded-2xl border border-[#d2d2d7] bg-white text-3xl font-semibold tracking-tight text-[#1d1d1f] transition-colors duration-200 hover:bg-[#f2f2f7] active:scale-[0.97] sm:h-[140px] sm:w-[220px] sm:text-[2.75rem]"
+                aria-label="右の単語だけシャッフル"
+                initial={{ y: 20, opacity: 0 }}
+                animate={{ y: 0, opacity: 1 }}
+                exit={{ y: -12, opacity: 0 }}
+                transition={{ ...springTransition, delay: 0.03 }}
+              >
+                {pair.right}
+              </motion.button>
+            </AnimatePresence>
+          </div>
+        )}
+
+        <div className="mb-16 mt-5 flex flex-wrap items-center justify-center gap-2">
           <button
             type="button"
-            onClick={handleShuffleLeft}
-            className="relative flex h-32 w-56 items-center justify-center rounded-2xl border border-[#c7c7cc] bg-white text-5xl font-semibold text-[#1d1d1f] transition hover:bg-[#fbfbfd]"
-            aria-label="左の単語だけシャッフル"
-          >
-            <span className="absolute right-3 top-3 text-sm text-[#8e8e93]" aria-hidden>
-              ↻
-            </span>
-            {pair.left}
-          </button>
-          <span className="text-lg text-[#86868b]">×</span>
-          <button
-            type="button"
-            onClick={handleShuffleRight}
-            className="relative flex h-32 w-56 items-center justify-center rounded-2xl border border-[#c7c7cc] bg-white text-5xl font-semibold text-[#1d1d1f] transition hover:bg-[#fbfbfd]"
-            aria-label="右の単語だけシャッフル"
-          >
-            <span className="absolute right-3 top-3 text-sm text-[#8e8e93]" aria-hidden>
-              ↻
-            </span>
-            {pair.right}
-          </button>
-        </div>
-        <div className="mt-4">
-          <button
-            type="button"
-            className="inline-flex min-w-28 items-center justify-center gap-2 rounded-full border border-[#222] bg-[#222] px-6 py-2.5 text-base font-medium text-white transition hover:bg-[#111]"
             onClick={handleShuffle}
+            disabled={loading}
+            className="inline-flex h-9 items-center gap-1.5 rounded-full border border-[#d2d2d7] bg-white px-3 text-xs font-medium text-[#1d1d1f] transition hover:bg-[#f2f2f7] disabled:opacity-50 sm:px-5 sm:text-sm"
           >
-            <span aria-hidden>↻</span>
+            <RefreshCw className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
             両方
           </button>
-        </div>
-
-        <div className="mt-6 flex items-center justify-center gap-8 text-[#515154]">
           <button
             type="button"
-            className="inline-flex items-center gap-2 text-sm transition hover:text-[#1d1d1f]"
+            onClick={handleSwap}
+            disabled={loading}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-transparent text-[#6e6e73] transition hover:bg-[#ececf0] hover:text-[#1d1d1f] disabled:opacity-50"
+            aria-label="単語を入れ替え"
+          >
+            <ArrowLeftRight className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={handleFavorite}
+            disabled={loading}
+            className={`inline-flex h-9 w-9 items-center justify-center rounded-full border border-transparent transition disabled:opacity-50 ${
+              isFavorited ? "text-[#ff375f] hover:bg-[#ffe9ef]" : "text-[#6e6e73] hover:bg-[#ececf0] hover:text-[#1d1d1f]"
+            }`}
+            aria-label="現在の単語ペアを保存"
+          >
+            <Heart className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="mt-1 flex flex-wrap items-center justify-center gap-4 text-[#515154] sm:gap-8">
+          <button
+            type="button"
+            className="inline-flex items-center gap-2 text-xs transition hover:text-[#1d1d1f] sm:text-sm"
             onClick={() => setIsFilterModalOpen(true)}
           >
-            <span aria-hidden>☰</span>
+            <SlidersHorizontal className="h-3.5 w-3.5 sm:h-4 sm:w-4" aria-hidden />
             フィルター
           </button>
           <button
             type="button"
-            className="inline-flex items-center gap-2 text-sm transition hover:text-[#1d1d1f]"
+            className="inline-flex items-center gap-2 text-xs transition hover:text-[#1d1d1f] sm:text-sm"
             onClick={handleSwap}
           >
-            <span aria-hidden>⇆</span>
+            <ArrowLeftRight className="h-3.5 w-3.5 sm:h-4 sm:w-4" aria-hidden />
             入れ替え
           </button>
           <button
             type="button"
-            className={`inline-flex items-center gap-2 text-sm transition ${
+            className={`inline-flex items-center gap-2 text-xs transition ${
               isFavorited ? "text-[#ff375f] hover:text-[#d7003b]" : "hover:text-[#1d1d1f]"
-            }`}
+            } sm:text-sm`}
             onClick={handleFavorite}
           >
-            <span aria-hidden>{isFavorited ? "♥" : "♡"}</span>
+            <Heart
+              className="h-3.5 w-3.5 sm:h-4 sm:w-4"
+              fill={isFavorited ? "currentColor" : "none"}
+              aria-hidden
+            />
             お気に入り
           </button>
           <button
             type="button"
-            className="inline-flex items-center gap-2 text-sm transition hover:text-[#1d1d1f] disabled:opacity-50"
+            className="inline-flex h-9 items-center gap-1.5 rounded-full border border-[#d2d2d7] bg-white px-3 text-xs font-medium text-[#1d1d1f] transition hover:bg-[#f2f2f7] disabled:opacity-50 sm:px-5 sm:text-sm"
             onClick={handleGenerateImage}
-            disabled={isGeneratingImage}
+            disabled={loading || isGeneratingImage}
           >
-            <span aria-hidden>✦</span>
-            {isGeneratingImage ? "生成中..." : "AI画像生成"}
+            {isGeneratingImage ? (
+              <Loader2 className="h-3 w-3 animate-spin sm:h-3.5 sm:w-3.5" />
+            ) : (
+              <ImageIcon className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
+            )}
+            画像生成
           </button>
           <button
             type="button"
-            className="inline-flex items-center gap-2 text-sm transition hover:text-[#1d1d1f] disabled:opacity-40"
+            className="inline-flex items-center gap-2 text-xs transition hover:text-[#1d1d1f] disabled:opacity-40 sm:text-sm"
             onClick={() => setIsGalleryModalOpen(true)}
             disabled={generatedImages.length === 0}
           >
-            <span aria-hidden>▦</span>
+            <LayoutGrid className="h-3.5 w-3.5 sm:h-4 sm:w-4" aria-hidden />
             生成一覧
           </button>
           <button
             type="button"
-            className="inline-flex items-center gap-2 text-sm transition hover:text-[#1d1d1f] disabled:opacity-40"
+            className="inline-flex items-center gap-2 text-xs transition hover:text-[#1d1d1f] disabled:opacity-40 sm:text-sm"
             onClick={handleCreateShare}
             disabled={isCreatingShare}
           >
-            <span aria-hidden>⤴</span>
+            <ArrowUpRight className="h-3.5 w-3.5 sm:h-4 sm:w-4" aria-hidden />
             {isCreatingShare ? "作成中..." : generatedImageUrl ? "OGPシェアURL" : "単語をシェア"}
           </button>
         </div>
 
-        <div className="mt-3 flex items-center justify-center gap-2">
-          <span className="text-xs text-[#8e8e93]">バリエーション</span>
+        <div className="mt-3 flex flex-wrap items-center justify-center gap-1.5 sm:gap-2">
+          <span className="text-xs text-[#8e8e93]">スタイル</span>
+          {allImageStyles.map((style) => {
+            const isCustom = style.id.startsWith("custom-");
+            return (
+              <div key={style.id} className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setImageStyleId(style.id)}
+                  className={`rounded-full border px-3 py-1 text-xs transition ${
+                    imageStyleId === style.id
+                      ? "border-[#1d1d1f] bg-[#1d1d1f] text-white"
+                      : "border-[#d2d2d7] bg-white text-[#515154]"
+                  }`}
+                >
+                  {style.label}
+                </button>
+                {isCustom ? (
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteCustomStyle(style.id)}
+                    className="rounded-full border border-[#e5e5ea] px-1.5 py-0.5 text-[10px] text-[#8e8e93] transition hover:text-[#d7003b]"
+                    aria-label={`${style.label} スタイルを削除`}
+                  >
+                    ×
+                  </button>
+                ) : null}
+              </div>
+            );
+          })}
           <button
             type="button"
-            onClick={() => setVariationMode("standard")}
-            className={`rounded-full border px-3 py-1 text-xs transition ${
-              variationMode === "standard"
-                ? "border-[#1d1d1f] bg-[#1d1d1f] text-white"
-                : "border-[#d2d2d7] bg-white text-[#515154]"
-            }`}
+            onClick={() => setIsStyleEditorOpen((prev) => !prev)}
+            className="rounded-full border border-[#d2d2d7] bg-white px-3 py-1 text-xs text-[#515154] transition hover:text-[#1d1d1f]"
           >
-            標準
+            + 追加
           </button>
           <button
             type="button"
-            onClick={() => setVariationMode("strong")}
+            onClick={() => setIncludePerson((prev) => !prev)}
             className={`rounded-full border px-3 py-1 text-xs transition ${
-              variationMode === "strong"
+              includePerson
                 ? "border-[#1d1d1f] bg-[#1d1d1f] text-white"
                 : "border-[#d2d2d7] bg-white text-[#515154]"
             }`}
           >
-            強め
-          </button>
-          <button
-            type="button"
-            onClick={() => setIncludeHumanFunny((prev) => !prev)}
-            className={`rounded-full border px-3 py-1 text-xs transition ${
-              includeHumanFunny
-                ? "border-[#1d1d1f] bg-[#1d1d1f] text-white"
-                : "border-[#d2d2d7] bg-white text-[#515154]"
-            }`}
-          >
-            おもしろ系 + 人物必須
+            人物あり
           </button>
         </div>
+
+        {isStyleEditorOpen ? (
+          <div className="mx-auto mt-3 w-full max-w-xl rounded-2xl border border-[#d2d2d7] bg-white p-3 text-left">
+            <p className="text-xs font-medium text-[#1d1d1f]">スタイル追加</p>
+            <div className="mt-2 grid gap-2">
+              <input
+                type="text"
+                value={newStyleLabel}
+                onChange={(event) => setNewStyleLabel(event.target.value)}
+                placeholder="スタイル名（例: ダークファンタジー）"
+                className="rounded-lg border border-[#d2d2d7] px-3 py-2 text-sm outline-none focus:border-[#1d1d1f]"
+              />
+              <textarea
+                value={newStylePrompt}
+                onChange={(event) => setNewStylePrompt(event.target.value)}
+                placeholder="このスタイルで入れたい表現（プロンプト）"
+                rows={3}
+                className="rounded-lg border border-[#d2d2d7] px-3 py-2 text-sm outline-none focus:border-[#1d1d1f]"
+              />
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleAddCustomStyle}
+                  className="rounded-full bg-[#1d1d1f] px-3 py-1.5 text-xs text-white transition hover:bg-black"
+                >
+                  追加する
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsStyleEditorOpen(false)}
+                  className="rounded-full border border-[#d2d2d7] bg-white px-3 py-1.5 text-xs text-[#515154]"
+                >
+                  キャンセル
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         {imageError ? <p className="mt-4 text-sm text-[#d7003b]">{imageError}</p> : null}
         {shareUrl ? (
@@ -633,7 +841,14 @@ export default function Page() {
           </p>
         ) : null}
 
-        {generatedImageUrl ? (
+        {isGeneratingImage ? (
+          <div className="mx-auto mt-6 flex w-full max-w-xl items-center justify-center gap-2 rounded-2xl border border-[#d2d2d7] bg-white py-10 text-[#6e6e73]">
+            <Loader2 className="h-5 w-5 animate-spin" />
+            <span className="text-sm">画像を生成中...</span>
+          </div>
+        ) : null}
+
+        {generatedImageUrl && !isGeneratingImage ? (
           <div ref={previewCardRef} className="mx-auto mt-6 max-w-xl overflow-hidden rounded-2xl border border-[#d2d2d7] bg-white">
             <div className="relative">
               <Image
@@ -671,20 +886,38 @@ export default function Page() {
           </div>
         ) : null}
 
-        <div className="mx-auto mt-10 max-w-xl rounded-2xl border border-[#d2d2d7] bg-white p-5 text-left">
-          <p className="text-sm font-medium text-[#1d1d1f]">お気に入り一覧（ローカル保存）</p>
-          {favorites.length === 0 ? (
-            <p className="mt-3 text-sm text-[#6e6e73]">まだお気に入りはありません。</p>
-          ) : (
-            <ul className="mt-3 space-y-2">
-              {favorites.map((item) => (
-                <li key={item} className="rounded-xl bg-[#f5f5f7] px-3 py-2 text-sm text-[#1d1d1f]">
-                  {item}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+        {favorites.length > 0 ? (
+          <div className="mt-2 w-full max-w-sm text-left">
+            <h2 className="mb-3 text-xs font-medium uppercase tracking-widest text-[#6e6e73]/70">保存済み</h2>
+            <div className="space-y-1.5">
+              <AnimatePresence>
+                {favorites.map((item, index) => (
+                  <motion.div
+                    key={`${item}-${index}`}
+                    initial={{ opacity: 0, y: -4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, x: 8 }}
+                    className="flex items-center justify-between rounded-xl border border-[#e5e5ea] bg-white px-4 py-2.5"
+                  >
+                    <span className="text-sm font-semibold text-[#1d1d1f]">
+                      {item.split(" × ")[0]}
+                      <span className="mx-2 font-normal text-[#6e6e73]/50">×</span>
+                      {item.split(" × ")[1]}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveFavorite(item)}
+                      className="p-1 text-[#6e6e73]/50 transition hover:text-[#d7003b]"
+                      aria-label="保存済みから削除"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </motion.div>
+                ))}
+              </AnimatePresence>
+            </div>
+          </div>
+        ) : null}
       </section>
 
       {isFilterModalOpen ? (
@@ -776,7 +1009,7 @@ export default function Page() {
                 閉じる
               </button>
             </div>
-            <div className="grid flex-1 grid-cols-2 gap-[1px] overflow-y-auto bg-black/40 sm:grid-cols-3 md:grid-cols-4">
+            <div className="grid flex-1 grid-cols-2 gap-px overflow-y-auto bg-black/40 sm:grid-cols-3 md:grid-cols-4">
               {generatedImages.map((item) => (
                 <div key={item.id} className="group relative bg-black" data-gallery-item="true">
                   <button

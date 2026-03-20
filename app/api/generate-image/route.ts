@@ -1,12 +1,15 @@
 import { NextResponse } from "next/server";
 import { saveGeneratedImageFromBase64, saveGeneratedImageFromRemoteUrl } from "../../../lib/server/share-store";
+import { IMAGE_STYLE_OPTIONS } from "../../../lib/image-generation-options";
 
 type GenerateImageRequest = {
   left?: string;
   right?: string;
   phrase?: string;
-  variationMode?: "standard" | "strong";
-  includeHumanFunny?: boolean;
+  imageStyleId?: string;
+  imageStyleLabel?: string;
+  imageStylePrompt?: string;
+  includePerson?: boolean;
 };
 
 function pickRandom<T>(items: readonly T[]): T {
@@ -15,19 +18,10 @@ function pickRandom<T>(items: readonly T[]): T {
 
 function buildPrompt(
   phrase: string,
-  variationMode: "standard" | "strong",
-  includeHumanFunny: boolean,
+  imageStylePrompt: string,
+  imageStyleLabel: string,
+  includePerson: boolean,
 ): string {
-  const styles = [
-    "シネマティックな写真風",
-    "水彩イラスト風",
-    "墨絵と現代デザインの融合",
-    "3Dレンダリング風",
-    "切り絵コラージュ風",
-    "油彩アート風",
-    "ポスターデザイン風",
-    "ミニマルなグラフィックアート",
-  ] as const;
   const compositions = [
     "中央構図",
     "左右非対称構図",
@@ -58,26 +52,19 @@ function buildPrompt(
     "ガラスのような透明感",
   ] as const;
 
-  const details =
-    variationMode === "strong"
-      ? [
-          `スタイル: ${pickRandom(styles)}`,
-          `構図: ${pickRandom(compositions)}`,
-          `ムード: ${pickRandom(moods)}`,
-          `色調: ${pickRandom(colorPalettes)}`,
-          `質感: ${pickRandom(textures)}`,
-          `ランダムキー: ${Math.floor(Math.random() * 1_000_000)}`,
-        ]
-      : [
-          `スタイル: ${pickRandom(styles)}`,
-          `構図: ${pickRandom(compositions)}`,
-          `色調: ${pickRandom(colorPalettes)}`,
-        ];
+  const details = [
+    `スタイル名: ${imageStyleLabel}`,
+    `スタイル: ${imageStylePrompt}`,
+    `構図: ${pickRandom(compositions)}`,
+    `ムード: ${pickRandom(moods)}`,
+    `色調: ${pickRandom(colorPalettes)}`,
+    `質感: ${pickRandom(textures)}`,
+    `ランダムキー: ${Math.floor(Math.random() * 1_000_000)}`,
+  ];
 
-  const humanFunnyConditions = includeHumanFunny
+  const personCondition = includePerson
     ? [
-        "- 人物を1人以上、必ず画面内に入れる",
-        "- ユーモアのある演出（表情・ポーズ・シチュエーション）を強める",
+        "- 人物を1人以上、必ず画面内に入れる（人物中心の画面設計）",
       ]
     : [];
 
@@ -89,7 +76,7 @@ function buildPrompt(
     "- 文字やロゴは入れない",
     "- 日本語の語感を想起させる抽象性と具体性のバランス",
     "- 高品質で破綻のない画像",
-    ...humanFunnyConditions,
+    ...personCondition,
   ].join("\n");
 }
 
@@ -112,13 +99,16 @@ export async function POST(request: Request) {
   const left = body.left?.trim();
   const right = body.right?.trim();
   const phrase = body.phrase?.trim();
-  const variationMode = body.variationMode === "strong" ? "strong" : "standard";
-  const includeHumanFunny = body.includeHumanFunny === true;
+  const selectedStyle =
+    IMAGE_STYLE_OPTIONS.find((item) => item.id === body.imageStyleId) ?? IMAGE_STYLE_OPTIONS[0];
+  const imageStyleLabel = body.imageStyleLabel?.trim() || selectedStyle.label;
+  const imageStylePrompt = body.imageStylePrompt?.trim() || selectedStyle.prompt;
+  const includePerson = body.includePerson !== false;
   if (!left || !right || !phrase) {
     return NextResponse.json({ error: "単語ペアが不足しています。" }, { status: 400 });
   }
 
-  const prompt = buildPrompt(phrase, variationMode, includeHumanFunny);
+  const prompt = buildPrompt(phrase, imageStylePrompt, imageStyleLabel, includePerson);
 
   const openAiResponse = await fetch("https://api.openai.com/v1/images/generations", {
     method: "POST",

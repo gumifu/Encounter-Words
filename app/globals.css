@@ -20,3 +20,7 @@ body {
     -apple-system,
     sans-serif;
 }
+
+button {
+  cursor: pointer;
+}
